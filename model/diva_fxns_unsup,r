@@ -1,0 +1,185 @@
+# additional diva functions for unsupervised learning 
+
+# sse
+# calculates and returns SEE of out activations
+#  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #
+sse <- function(out_activation, current_target){
+
+  result <- rep(NA, dim(out_activation)[3])
+  for(channel in 1:dim(out_activation)[3]){
+  
+    result[channel] <- sum((out_activation[,,channel] - current_target)^2)
+  
+  }
+  
+  return(result)
+}
+
+# spawn_channel
+# adds another channel to DIVA's architecture
+#  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #
+spawn_channel <- function(out_wts, num_cats, num_hids, num_feats,bias,wts_center, wts_range){
+
+   newchannel <- (array(runif((num_hids + bias) * num_feats), 
+      dim = c((num_hids + bias), num_feats, 1)) - 0.5) * 2
+  
+   newchannel <- wts_center + (wts_range * newchannel)
+  
+  out_wts <- (array(c(out_wts,newchannel), 
+    dim = c((num_hids + bias), num_feats, (num_cats)))) 
+  
+  return(out_wts)
+}
+
+# spawn_channel
+# adds another channel to DIVA's architecture
+#  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #
+init_result_struct <- function(num_updates, num_feats, num_inits){
+  row.names <- paste0(rep('trial', num_updates), 1:num_updates)
+  col.names <- c(paste0(rep('f', num_feats), 1:num_feats),
+    'actualClass', 'predClass', 'responseProb')
+  matrix.names <- paste0(rep('initialization', num_inits), 1:num_inits)
+
+  decisions <- array(rep(NA, num_updates * (num_feats + 3) * num_inits),
+    dim = c(num_updates, (num_feats + 3), num_inits), 
+    dimnames = list(row.names,col.names,matrix.names))
+
+  return(decisions)
+}
+
+# run_diva_unsup
+# trains unsupervised diva
+#  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #
+run_diva_unsup <- function(model) {
+  
+  # # # get new seed
+  model.seed <- runif(1) * 100000 * runif(1)
+  set.seed(model.seed)
+  
+  # # # set mean value of weights
+  model$wts_center <- 0 
+  # # # convert targets to 0/1
+  # model$targets <- global_scale(model$inputs) 
+  model$targets <- model$inputs 
+  # # # init size parameter variables
+  model$num_feats   <- ncol(model$inputs)
+  model$num_stims   <- nrow(model$inputs)
+  model$num_cats    <- length(unique(model$labels))
+  model$num_updates <- model$num_blocks * model$num_stims
+
+
+  # # # init classification decision array
+  decisions <- init_result_struct(num_updates = model$num_updates,
+    num_feats = model$num_feats, num_inits = model$num_inits)
+
+  # # # init weights
+  wts_list <- list()
+
+
+  # # # initialize and run DIVA models
+  for (model_num in 1:model$num_inits) {
+
+    # # # create category channels based on whether or not 
+    # # # they are constrained
+    if(model$constrain_channel == FALSE){
+      # model$num_cats <- 1
+       model$num_cats <- 2
+    }else if(model$constrain_channel == TRUE){
+      model$num_cats <- model$num_channels
+    }
+
+    # # # generate weights
+    wts <- get_wts(model$num_feats, model$num_hids, model$num_cats, 
+      model$wts_range, model$wts_center)
+    
+    # # # generate random presentation order
+    prez_order <- as.vector(apply(replicate(model$num_blocks, 
+      seq(1, model$num_stims)), 2, sample, model$num_stims))
+
+    # # # iterate over each trial in the presentation order 
+    for (trial_num in 1:model$num_updates) {
+      # # # get current stim
+      current_input  <- model$inputs[prez_order[[trial_num]], ]
+      current_target <- model$targets[prez_order[[trial_num]], ]
+      current_class  <- model$labels[prez_order[[trial_num]]] 
+
+      # # # add current stim to decisions struct
+      decisions[trial_num, 1:(model$num_feats + 1) ,model_num] <- c(current_input, current_class)
+
+      # # # complete initial forward pass to determine error on each channel
+      fp <- forward_pass(wts$in_wts, wts$out_wts, current_input, model$out_rule)
+
+      if(model$num_cats > 1){
+        # # # calculate classification probability
+        response <- response_rule(fp$out_activation, current_target, model$beta_val)
+        error <- response$ssqerror
+      }else{error <- sse(fp$out_activation, current_target)}
+
+      # # # decide to add new category (and train it) or use existing one
+      if(trial_num <= 1){
+        decisions[trial_num, (model$num_feats + 2) , model_num]<- current_class <- 1
+        decisions[trial_num, (model$num_feats + 3) , model_num] <- max(response$ps)
+
+      #}else if(min(error) >= model$spawn_threshold & model$constrain_channel == FALSE){
+       }else if(max(response$ps) <= ((1 / model$num_cats) + model$spawn_threshold) & model$constrain_channel == FALSE){
+        # # # add new channel
+        model$num_cats <- model$num_cats + 1
+
+        decisions[trial_num, (model$num_feats + 2) ,model_num] <- current_class <- model$num_cats
+        decisions[trial_num, (model$num_feats + 3) , model_num] <- max(response$ps)
+
+        wts$out_wts <- spawn_channel(wts$out_wts, model$num_cats, model$num_hids, 
+          model$num_feats,bias = 1,model$wts_center, model$wts_range)
+
+        # # # train eg on new channel for train_length
+        for(iter in 1:model$train_length){
+          # # # forward pass to update out activations
+          fp <- forward_pass(wts$in_wts, wts$out_wts, current_input, model$out_rule)
+
+          if(model$num_cats > 1){
+            # # # calculate classification probability
+            response <- response_rule(fp$out_activation, current_target, model$beta_val)
+            error <- response$ssqerror
+          }else{error <- sse(fp$out_activation, current_target)}
+
+
+          # # # backprop to adjust wants on newly created channel
+          class_wts <- wts$out_wts[,,current_class]
+          class_activation <- fp$out_activation[,,current_class]
+
+          adjusted_wts <- backprop(class_wts, wts$in_wts, class_activation, current_target,  
+            fp$hid_activation, fp$hid_activation_raw, fp$ins_w_bias, model$learning_rate)
+
+          # # # set new weights
+          wts$out_wts[,,current_class] <- adjusted_wts$out_wts
+          wts$in_wts <- adjusted_wts$in_wts
+        }
+
+      }else if((max(response$ps) > ((1 / model$num_cats) + model$spawn_threshold) & model$constrain_channel == FALSE) | model$constrain_channel == TRUE){
+      # # if categories are constrained or new channel doesn't need to be created
+        decisions[trial_num, (model$num_feats + 2) ,model_num] <- current_class <- which.max(response$ps)
+        decisions[trial_num, (model$num_feats + 3) , model_num] <- max(response$ps)
+      }
+
+      # # # back propagate error to adjust weights
+      class_wts <- wts$out_wts[,,current_class]
+      class_activation <- fp$out_activation[,,current_class]
+
+      adjusted_wts <- backprop(class_wts, wts$in_wts, class_activation, current_target,  
+               fp$hid_activation, fp$hid_activation_raw, fp$ins_w_bias, model$learning_rate)
+
+      # # # set new weights
+      wts$out_wts[,,current_class] <- adjusted_wts$out_wts
+      wts$in_wts <- adjusted_wts$in_wts
+  
+    }
+    # # # add final weights to output list
+  	wts_list <- c(wts_list, list(wts))
+  }
+
+return(list(classifications = decisions,
+            model    = model,
+			weights = wts_list))
+
+}
+
