@@ -1,0 +1,91 @@
+# diva_predict
+# makes a prediction for a new item based on existing diva model
+#  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #
+diva_predict <- function(inputs, labels = NULL, weights, model){
+
+	# # init result
+	output <- data.frame(inputs)
+	if(!(is.null(labels))){output$act_class <- labels}
+	output$pred_class <- rep(NA, nrow(output))
+	output$error <- rep(NA, nrow(output))
+	output$resp_prob <- rep(NA, nrow(output))
+  output$channelA_prob <- rep(NA, nrow(output))
+
+	# # # create targets
+	targets <- inputs 
+
+	# # iterate through each item to get predictions
+	for(i in 1:nrow(inputs)){
+      # # # get current stim
+      current_input  <- inputs[i, ]
+      current_target <- targets[i, ]
+      if(!(is.null(labels))){
+      	current_class  <- labels[i] 
+      }
+
+      # # # forward pass
+      fp <- forward_pass(weights$in_wts, weights$out_wts, current_input, model$out_rule)
+      
+      # # # calculate classification probability
+      response <- response_rule(fp$out_activation, current_target, model$beta_val)
+      error <- response$ssqerror
+      output$pred_class[i] <- which.max(response$ps)
+      output$error[i] <- min(error)
+      output$resp_prob[i] <- max(response$ps)
+      output$channelA_prob[i] <- response$ps[1]
+    
+	}
+	return(output)
+}
+
+# create_grid
+# creates a grid of values to model predictions across an entire range of feature space
+#  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #
+create_grid <- function(xrange, by.x, yrange, by.y){
+	valRange <- list(x = seq(xrange[1], xrange[2], by.x),
+		y = seq(yrange[1], yrange[2], by.y))
+	
+	genGrid <- do.call(expand.grid,valRange)
+
+	return(genGrid)
+}
+
+# multiplot
+# older version of code for the same-named function that is now in the "scater" library
+#  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #  #
+multiplot <- function(..., plotlist=NULL, file, cols=1, layout=NULL) {
+  library(grid)
+
+  # Make a list from the ... arguments and plotlist
+  plots <- c(list(...), plotlist)
+
+  numPlots = length(plots)
+
+  # If layout is NULL, then use 'cols' to determine layout
+  if (is.null(layout)) {
+    # Make the panel
+    # ncol: Number of columns of plots
+    # nrow: Number of rows needed, calculated from # of cols
+    layout <- matrix(seq(1, cols * ceiling(numPlots/cols)),
+                    ncol = cols, nrow = ceiling(numPlots/cols))
+  }
+
+ if (numPlots==1) {
+    print(plots[[1]])
+
+  } else {
+    # Set up the page
+    grid.newpage()
+    pushViewport(viewport(layout = grid.layout(nrow(layout), ncol(layout))))
+
+    # Make each plot, in the correct location
+    for (i in 1:numPlots) {
+      # Get the i,j matrix positions of the regions that contain this subplot
+      matchidx <- as.data.frame(which(layout == i, arr.ind = TRUE))
+
+      print(plots[[i]], vp = viewport(layout.pos.row = matchidx$row,
+                                      layout.pos.col = matchidx$col))
+    }
+  }
+}
+
